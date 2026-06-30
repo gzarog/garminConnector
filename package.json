@@ -1,0 +1,39 @@
+{
+  "name": "garmin-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP connector for Garmin Connect — access your health, fitness, and activity data directly in Claude.ai.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "garmin-mcp-server": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "mcp",
+    "garmin",
+    "garmin-connect",
+    "claude",
+    "health",
+    "fitness"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.21.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
