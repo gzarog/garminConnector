@@ -9,6 +9,12 @@
 
 import { DEFAULTS, GARMIN_ENDPOINTS } from "../constants.js";
 import { getValidAccessToken } from "./auth.js";
+import {
+  normalizeDateRange,
+  validateOptionalRange,
+  type NormalizedRange,
+} from "../utils/dates.js";
+import { envelope, extractList, type Envelope } from "../utils/format.js";
 import type {
   GarminRequestOptions,
   ServerConfig,
@@ -138,19 +144,37 @@ export class GarminClient {
 
   // --- Convenience helpers used by tools -----------------------------------
 
-  /** Normalize a date range into Garmin's expected query params. */
-  private dateRangeQuery(startDate: string, endDate?: string) {
-    return {
-      uploadStartTimeInSeconds: undefined, // placeholder for ping/pull variants
-      startDate,
-      endDate: endDate ?? startDate,
-    };
+  /**
+   * Validate a date range and issue a request against a date-scoped endpoint,
+   * returning the payload wrapped in a metadata envelope. Garmin's wellness
+   * endpoints are bounded by epoch-second upload windows.
+   */
+  private async dateRangeRequest<T = unknown>(
+    userId: string,
+    path: string,
+    range: NormalizedRange,
+    extraQuery: Record<string, string | number | boolean | undefined> = {},
+  ): Promise<Envelope<T>> {
+    const data = await this.request<T>(userId, path, {
+      query: {
+        uploadStartTimeInSeconds: range.startEpochSec,
+        uploadEndTimeInSeconds: range.endEpochSec,
+        ...extraQuery,
+      },
+    });
+    return envelope(data, {
+      startDate: range.startDate,
+      endDate: range.endDate,
+      days: range.days,
+    });
   }
 
   getDailySummary(userId: string, startDate: string, endDate?: string) {
-    return this.request(userId, GARMIN_ENDPOINTS.dailySummary, {
-      query: this.dateRangeQuery(startDate, endDate),
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.dailySummary,
+      normalizeDateRange(startDate, endDate),
+    );
   }
 
   getHeartRate(
@@ -159,9 +183,12 @@ export class GarminClient {
     endDate?: string,
     includeSamples?: boolean,
   ) {
-    return this.request(userId, GARMIN_ENDPOINTS.heartRate, {
-      query: { ...this.dateRangeQuery(startDate, endDate), includeSamples },
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.heartRate,
+      normalizeDateRange(startDate, endDate),
+      { includeSamples },
+    );
   }
 
   getSleep(
@@ -170,9 +197,12 @@ export class GarminClient {
     endDate?: string,
     extra?: { includeSpo2?: boolean; includeRespiration?: boolean },
   ) {
-    return this.request(userId, GARMIN_ENDPOINTS.sleep, {
-      query: { ...this.dateRangeQuery(startDate, endDate), ...extra },
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.sleep,
+      normalizeDateRange(startDate, endDate),
+      { ...extra },
+    );
   }
 
   getStress(
@@ -181,39 +211,52 @@ export class GarminClient {
     endDate?: string,
     includeSamples?: boolean,
   ) {
-    return this.request(userId, GARMIN_ENDPOINTS.stress, {
-      query: { ...this.dateRangeQuery(startDate, endDate), includeSamples },
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.stress,
+      normalizeDateRange(startDate, endDate),
+      { includeSamples },
+    );
   }
 
   getBodyBattery(userId: string, startDate: string, endDate?: string) {
-    return this.request(userId, GARMIN_ENDPOINTS.bodyBattery, {
-      query: this.dateRangeQuery(startDate, endDate),
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.bodyBattery,
+      normalizeDateRange(startDate, endDate),
+    );
   }
 
   getPulseOx(userId: string, startDate: string, endDate?: string) {
-    return this.request(userId, GARMIN_ENDPOINTS.pulseOx, {
-      query: this.dateRangeQuery(startDate, endDate),
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.pulseOx,
+      normalizeDateRange(startDate, endDate),
+    );
   }
 
   getRespiration(userId: string, startDate: string, endDate?: string) {
-    return this.request(userId, GARMIN_ENDPOINTS.respiration, {
-      query: this.dateRangeQuery(startDate, endDate),
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.respiration,
+      normalizeDateRange(startDate, endDate),
+    );
   }
 
   getHrv(userId: string, startDate: string, endDate?: string) {
-    return this.request(userId, GARMIN_ENDPOINTS.hrv, {
-      query: this.dateRangeQuery(startDate, endDate),
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.hrv,
+      normalizeDateRange(startDate, endDate),
+    );
   }
 
   getHydration(userId: string, startDate: string, endDate?: string) {
-    return this.request(userId, GARMIN_ENDPOINTS.hydration, {
-      query: this.dateRangeQuery(startDate, endDate),
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.hydration,
+      normalizeDateRange(startDate, endDate),
+    );
   }
 
   getBodyComposition(
@@ -222,12 +265,15 @@ export class GarminClient {
     endDate?: string,
     limit?: number,
   ) {
-    return this.request(userId, GARMIN_ENDPOINTS.bodyComposition, {
-      query: { ...this.dateRangeQuery(startDate, endDate), limit },
-    });
+    return this.dateRangeRequest(
+      userId,
+      GARMIN_ENDPOINTS.bodyComposition,
+      normalizeDateRange(startDate, endDate),
+      { limit },
+    );
   }
 
-  listActivities(
+  async listActivities(
     userId: string,
     params: {
       startDate?: string;
@@ -237,15 +283,64 @@ export class GarminClient {
       offset?: number;
     },
   ) {
-    return this.request(userId, GARMIN_ENDPOINTS.activities, {
-      query: {
+    validateOptionalRange(params.startDate, params.endDate);
+    const limit = Math.min(params.limit ?? DEFAULTS.pageSize, DEFAULTS.maxPageSize);
+    const offset = params.offset ?? 0;
+
+    const collected = await this.paginate(
+      userId,
+      GARMIN_ENDPOINTS.activities,
+      {
         startDate: params.startDate,
         endDate: params.endDate,
         activityType: params.activityType,
-        limit: params.limit ?? DEFAULTS.pageSize,
-        offset: params.offset ?? 0,
       },
+      limit,
+      offset,
+    );
+
+    return envelope(collected.items, {
+      startDate: params.startDate,
+      endDate: params.endDate,
+      count: collected.items.length,
+      nextOffset: collected.nextOffset,
     });
+  }
+
+  /**
+   * Fetch sequential pages from a list endpoint until `limit` records are
+   * collected or a short (final) page is returned. Bounds the number of
+   * requests so a misbehaving endpoint cannot loop indefinitely.
+   */
+  private async paginate(
+    userId: string,
+    path: string,
+    baseQuery: Record<string, string | number | boolean | undefined>,
+    limit: number,
+    startOffset: number,
+  ): Promise<{ items: unknown[]; nextOffset?: number }> {
+    const items: unknown[] = [];
+    let offset = startOffset;
+    const maxPages = Math.ceil(limit / DEFAULTS.pageSize) + 1;
+
+    for (let page = 0; page < maxPages && items.length < limit; page++) {
+      const pageSize = Math.min(DEFAULTS.pageSize, limit - items.length);
+      const data = await this.request(userId, path, {
+        query: { ...baseQuery, limit: pageSize, offset },
+      });
+      const list = extractList(data);
+      if (!list || list.length === 0) {
+        return { items };
+      }
+      items.push(...list);
+      offset += list.length;
+      // A short page means we've reached the end.
+      if (list.length < pageSize) {
+        return { items };
+      }
+    }
+
+    return { items: items.slice(0, limit), nextOffset: offset };
   }
 
   getActivityDetail(
@@ -268,7 +363,7 @@ export class GarminClient {
     );
   }
 
-  searchActivities(
+  async searchActivities(
     userId: string,
     params: {
       query: string;
@@ -278,15 +373,18 @@ export class GarminClient {
       limit?: number;
     },
   ) {
-    return this.request(userId, GARMIN_ENDPOINTS.activities, {
+    validateOptionalRange(params.startDate, params.endDate);
+    const limit = Math.min(params.limit ?? DEFAULTS.pageSize, DEFAULTS.maxPageSize);
+    const data = await this.request(userId, GARMIN_ENDPOINTS.activities, {
       query: {
         search: params.query,
         activityType: params.activityType,
         startDate: params.startDate,
         endDate: params.endDate,
-        limit: params.limit ?? DEFAULTS.pageSize,
+        limit,
       },
     });
+    return envelope(data, { startDate: params.startDate, endDate: params.endDate });
   }
 
   pushWorkout(userId: string, workout: unknown) {

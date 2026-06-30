@@ -38,9 +38,29 @@ TRANSPORT=stdio npm start
 ## Testing
 
 ```bash
-# Test with MCP Inspector
+# Run the unit test suite (date validation, response envelope,
+# API client retry/pagination, OAuth token refresh)
+npm test
+
+# Interactive testing with MCP Inspector
 npx @modelcontextprotocol/inspector
 ```
+
+## Response format
+
+Date-scoped and list tools wrap the Garmin payload in a metadata envelope so
+responses are self-describing:
+
+```jsonc
+{
+  "meta": { "startDate": "2026-06-01", "endDate": "2026-06-07", "days": 7, "count": 3 },
+  "data": { /* raw Garmin payload, passed through untouched */ }
+}
+```
+
+Date ranges are validated (ordering and a maximum span) and list tools
+auto-paginate up to the requested `limit`, exposing a `nextOffset` cursor when
+more records remain.
 
 ## Tools
 
