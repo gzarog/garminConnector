@@ -4,6 +4,7 @@ import type { Response } from "express";
 import { DemoGarminClient } from "../src/services/demo-client.js";
 import { GarminOAuthProvider } from "../src/services/oauth-provider.js";
 import { MemoryTokenStore } from "../src/services/token-store.js";
+import { MemoryKeyValueStore } from "../src/services/kv.js";
 import { GarminApiError } from "../src/types.js";
 import { makeConfig } from "./helpers.js";
 
@@ -74,8 +75,9 @@ describe("GarminOAuthProvider (demo mode)", () => {
       makeConfig({ demoMode: true }),
       store,
       "http://localhost:3999/oauth/callback",
+      new MemoryKeyValueStore(),
     );
-    const client = provider.clientsStore.registerClient({
+    const client = await provider.clientsStore.registerClient({
       redirect_uris: [CLIENT_REDIRECT],
     } as never);
 

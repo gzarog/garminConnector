@@ -78,13 +78,29 @@ the metadata endpoints.
 
 ## State storage in production
 
-Two kinds of state are held in memory by default:
+Two kinds of state must be shared for correctness:
 
 1. **Per-user Garmin tokens** (`src/services/token-store.ts`).
 2. **OAuth server state** — registered clients, authorization codes, and issued
    access/refresh tokens (`src/services/oauth-provider.ts`).
 
-Both are fine for a **single instance** but do not survive restarts or scale
-across replicas. For multi-instance deployments, back them with Redis: the token
-store factory already accepts `TOKEN_STORE=redis` and `REDIS_URL`, and the OAuth
-provider's in-memory maps should be moved to the same shared store.
+Both are built on a small `KeyValueStore` abstraction (`src/services/kv.ts`)
+with two backends:
+
+- **`memory`** (default) — fine for a **single instance**; does not survive
+  restarts or scale across replicas.
+- **`redis`** — required for **multi-instance / horizontally scaled**
+  deployments so a token issued by one replica is verifiable by any other.
+
+Enable Redis with:
+
+```bash
+TOKEN_STORE=redis
+REDIS_URL=redis://<host>:6379   # or rediss:// for TLS
+```
+
+Keys are namespaced (`garmin:token:*`, `oauth:client|code|access|refresh|pending:*`)
+and short-lived entries (auth codes, access tokens, pending authorizations)
+carry TTLs so they expire automatically. The `redis` client is a bundled
+dependency; if Redis is unreachable at startup the server logs the error and
+**falls back to in-memory** so it still starts (single-instance behavior).
