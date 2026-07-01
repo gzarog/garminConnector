@@ -24,6 +24,9 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
 
+# Branding assets served at /logo.svg, /favicon.svg, /assets/*.
+COPY assets ./assets
+
 # Default to the HTTP transport for a remote connector.
 ENV TRANSPORT=http
 ENV PORT=3000
