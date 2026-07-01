@@ -19,13 +19,25 @@ const LOCAL_USER_ID = "local-user";
 /**
  * Derive a stable user id from the MCP request's auth info.
  *
- * In remote (HTTP) mode the SDK attaches OAuth `authInfo` to each request; we
- * key sessions on a hash of the bearer token so the same connected user maps
- * to the same Garmin token set. In stdio mode there is a single local user.
+ * In remote (HTTP) mode the OAuth layer validates the bearer token and attaches
+ * `authInfo` to each request, carrying the resolved `userId` in `extra`. That
+ * id maps to the user's own Garmin token set, so each user only sees their own
+ * data. As a fallback we hash the raw token; in stdio mode there is a single
+ * local user.
  */
 function resolveUserId(extra: unknown): string {
-  const authInfo = (extra as { authInfo?: { token?: string; clientId?: string } })
-    ?.authInfo;
+  const authInfo = (
+    extra as {
+      authInfo?: {
+        token?: string;
+        clientId?: string;
+        extra?: { userId?: string };
+      };
+    }
+  )?.authInfo;
+  if (authInfo?.extra?.userId) {
+    return authInfo.extra.userId;
+  }
   if (authInfo?.token) {
     return createHash("sha256").update(authInfo.token).digest("hex").slice(0, 32);
   }

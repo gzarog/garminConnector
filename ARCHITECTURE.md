@@ -87,31 +87,49 @@ A production-grade MCP connector for Claude.ai that gives users natural-language
 
 ### Authentication Flow
 
+The server is its own **OAuth 2.1 Authorization Server** (the MCP client is the
+OAuth *client*). It bridges each user to Garmin and mints its own tokens, so
+every MCP request resolves to that user's personal Garmin token set.
+
 ```
-User clicks "Connect Garmin" in Claude.ai
+Claude.ai discovers /.well-known/oauth-authorization-server + protected-resource
     │
     ▼
-Claude.ai redirects to garmin-mcp-server /authorize
+Claude.ai registers via Dynamic Client Registration (/register)
     │
     ▼
-Server redirects to Garmin OAuth 2.0 authorization URL
+User clicks "Connect"; Claude.ai → server /authorize (with PKCE)
+    │
+    ▼
+Server stashes the request and redirects to Garmin's OAuth authorization URL
     │
     ▼
 User grants permission on Garmin Connect
     │
     ▼
-Garmin redirects to server callback with auth code
+Garmin → server /oauth/callback with auth code
     │
     ▼
-Server exchanges code for access_token + refresh_token
+Server exchanges code for Garmin access_token + refresh_token,
+  creates a fresh user id, and stores { userId → Garmin tokens }
     │
     ▼
-Server redirects to Claude.ai callback:
-  https://claude.ai/api/mcp/auth_callback
+Server mints its OWN authorization code and redirects to Claude.ai callback:
+  https://claude.ai/api/mcp/auth_callback?code=...&state=...
     │
     ▼
-Claude.ai stores token, subsequent MCP calls include it
+Claude.ai exchanges the code at server /token for OUR access/refresh token
+    │
+    ▼
+Every MCP call sends "Authorization: Bearer <our-token>"; the server verifies
+  it, resolves the userId, and uses that user's Garmin tokens
 ```
+
+**Per-user isolation:** the bearer token → `userId` → Garmin token set chain
+means each connected user only ever accesses their own Garmin data. Token
+storage is keyed by `userId` (`TokenStore`), and OAuth server state lives in
+`services/oauth-provider.ts` (in-memory for a single instance; back with Redis
+for multi-instance).
 
 ---
 

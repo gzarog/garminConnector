@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import {
   DEFAULT_SCOPES,
   GARMIN_API_BASE_URL,
@@ -22,13 +24,9 @@ import {
   SERVER_NAME,
   SERVER_VERSION,
 } from "./constants.js";
-import {
-  buildAuthorizeUrl,
-  exchangeCodeForTokens,
-  generateState,
-} from "./services/auth.js";
 import { createTokenStore } from "./services/token-store.js";
-import { createServer, LOCAL_USER_ID } from "./server.js";
+import { GarminOAuthProvider } from "./services/oauth-provider.js";
+import { createServer } from "./server.js";
 import { logger, setLogLevel, type LogLevel } from "./utils/logger.js";
 import type { ServerConfig } from "./types.js";
 
@@ -70,12 +68,14 @@ async function runStdio(config: ServerConfig): Promise<void> {
 
 async function runHttp(config: ServerConfig): Promise<void> {
   const store = createTokenStore(config.tokenStore, config.redisUrl);
+
+  const issuerUrl = new URL(config.publicBaseUrl);
+  const garminRedirectUri = `${config.publicBaseUrl}/oauth/callback`;
+  const provider = new GarminOAuthProvider(config, store, garminRedirectUri);
+  const resourceMetadataUrl = `${config.publicBaseUrl}/.well-known/oauth-protected-resource`;
+
   const app = express();
   app.use(express.json({ limit: "4mb" }));
-
-  /** Pending OAuth `state` values awaiting a callback. */
-  const pendingStates = new Set<string>();
-  const redirectUri = `${config.publicBaseUrl}/oauth/callback`;
 
   // --- Health check --------------------------------------------------------
   app.get("/healthz", (_req, res) => {
@@ -91,43 +91,44 @@ async function runHttp(config: ServerConfig): Promise<void> {
   );
   app.get("/favicon.ico", (_req, res) => res.redirect(302, "/favicon.svg"));
 
-  // --- OAuth: begin authorization -----------------------------------------
-  app.get("/authorize", (_req: Request, res: Response) => {
-    if (!config.garmin.clientId) {
-      res.status(500).send("GARMIN_CLIENT_ID is not configured.");
-      return;
-    }
-    const state = generateState();
-    pendingStates.add(state);
-    const url = buildAuthorizeUrl(config, state, redirectUri);
-    res.redirect(url);
-  });
+  // --- OAuth Authorization Server ------------------------------------------
+  // Installs /.well-known/oauth-authorization-server, /.well-known/
+  // oauth-protected-resource, /authorize, /token, /register, and /revoke.
+  app.use(
+    mcpAuthRouter({
+      provider,
+      issuerUrl,
+      scopesSupported: config.garmin.scopes,
+      resourceName: SERVER_NAME,
+    }),
+  );
 
-  // --- OAuth: Garmin callback ---------------------------------------------
+  // Garmin's redirect target: exchange the Garmin code, bind the user, then
+  // send the MCP client back to its own redirect_uri with our auth code.
   app.get("/oauth/callback", async (req: Request, res: Response) => {
     const code = String(req.query.code ?? "");
     const state = String(req.query.state ?? "");
-    if (!code || !state || !pendingStates.has(state)) {
-      res.status(400).send("Invalid or expired OAuth state.");
+    if (req.query.error) {
+      res.status(400).send(`Garmin authorization failed: ${req.query.error}`);
       return;
     }
-    pendingStates.delete(state);
+    if (!code || !state) {
+      res.status(400).send("Missing code or state from Garmin.");
+      return;
+    }
     try {
-      const tokens = await exchangeCodeForTokens(config, code, redirectUri);
-      // Scaffold: associate tokens with the local user. Production deployments
-      // bridge this to the Claude.ai connector identity via the MCP auth token.
-      await store.set(LOCAL_USER_ID, tokens);
-      res.send(
-        "Garmin account connected. You can close this window and return to Claude.",
-      );
+      const { redirectTo } = await provider.handleGarminCallback(state, code);
+      res.redirect(redirectTo);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(502).send(`Failed to exchange code: ${message}`);
+      logger.error("Garmin callback failed:", message);
+      res.status(502).send(`Failed to complete Garmin authorization: ${message}`);
     }
   });
 
-  // --- MCP Streamable HTTP endpoint (stateless) ----------------------------
-  app.post("/mcp", async (req: Request, res: Response) => {
+  // --- MCP Streamable HTTP endpoint (stateless, bearer-authenticated) -------
+  const bearerAuth = requireBearerAuth({ verifier: provider, resourceMetadataUrl });
+  app.post("/mcp", bearerAuth, async (req: Request, res: Response) => {
     const server = createServer(config, store);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

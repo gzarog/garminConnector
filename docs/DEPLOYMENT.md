@@ -63,9 +63,28 @@ Set `PUBLIC_BASE_URL` in `fly.toml` to the deployed URL (e.g.
 `GET /healthz` returns `{ "name", "version", "ok": true }` for load-balancer and
 uptime probes.
 
-## Token storage in production
+## Authentication
 
-The default in-memory store is fine for a single instance but does not survive
-restarts or scale across replicas. For multi-instance deployments, implement the
-Redis backend in `src/services/token-store.ts` (the factory already accepts
-`TOKEN_STORE=redis` and `REDIS_URL`).
+The server is its own **OAuth 2.1 Authorization Server** (via the MCP SDK). It
+advertises `/.well-known/oauth-authorization-server` and
+`/.well-known/oauth-protected-resource`, supports Dynamic Client Registration
+(`/register`), and protects `/mcp` with bearer-token auth. Each end user
+completes Garmin's own OAuth flow, and the server maps their bearer token to
+their personal Garmin token set — so **every user only sees their own data**.
+
+Register `${PUBLIC_BASE_URL}/oauth/callback` as an allowed redirect URI in your
+Garmin developer app; MCP clients (e.g. Claude.ai) discover everything else from
+the metadata endpoints.
+
+## State storage in production
+
+Two kinds of state are held in memory by default:
+
+1. **Per-user Garmin tokens** (`src/services/token-store.ts`).
+2. **OAuth server state** — registered clients, authorization codes, and issued
+   access/refresh tokens (`src/services/oauth-provider.ts`).
+
+Both are fine for a **single instance** but do not survive restarts or scale
+across replicas. For multi-instance deployments, back them with Redis: the token
+store factory already accepts `TOKEN_STORE=redis` and `REDIS_URL`, and the OAuth
+provider's in-memory maps should be moved to the same shared store.
