@@ -1,0 +1,37 @@
+# Example Fly.io deployment configuration.
+# Copy to your own app, run `fly launch --no-deploy` to register the app name,
+# set secrets with `fly secrets set ...`, then `fly deploy`.
+
+app = "garmin-mcp-server"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TRANSPORT = "http"
+  PORT = "3000"
+  HOST = "0.0.0.0"
+  LOG_LEVEL = "info"
+  # PUBLIC_BASE_URL must match the deployed URL so OAuth redirect URIs resolve.
+  PUBLIC_BASE_URL = "https://garmin-mcp-server.fly.dev"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+# Secrets (do NOT put these here — set via `fly secrets set`):
+#   GARMIN_CLIENT_ID, GARMIN_CLIENT_SECRET, GARMIN_SCOPES

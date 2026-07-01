@@ -38,12 +38,20 @@ export function storeWithToken(
   return store;
 }
 
-/** Build a minimal fetch Response stand-in. */
-export function makeResponse(status: number, body: unknown): Response {
+/** Build a minimal fetch Response stand-in, optionally with headers. */
+export function makeResponse(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
   const text = typeof body === "string" ? body : JSON.stringify(body);
+  const lower = new Map(
+    Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]),
+  );
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: { get: (name: string) => lower.get(name.toLowerCase()) ?? null },
     text: async () => text,
     json: async () => (typeof body === "string" ? JSON.parse(text) : body),
   } as Response;

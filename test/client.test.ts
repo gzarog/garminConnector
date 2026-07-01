@@ -103,3 +103,45 @@ describe("GarminClient.listActivities", () => {
     assert.equal(f.calls.length, 0);
   });
 });
+
+describe("GarminClient error handling", () => {
+  it("honors a Retry-After header on 429 and then succeeds", async () => {
+    const f = stubFetch([
+      makeResponse(429, { message: "slow down" }, { "retry-after": "0" }),
+      makeResponse(200, { ok: true }),
+    ]);
+    restore = f.restore;
+    const client = new GarminClient(makeConfig(), storeWithToken(USER));
+    const result = await client.request(USER, "/x");
+    assert.deepEqual(result, { ok: true });
+    assert.equal(f.calls.length, 2);
+  });
+
+  it("surfaces a friendly, parsed error message", async () => {
+    const f = stubFetch([makeResponse(400, { message: "bad param" })]);
+    restore = f.restore;
+    const client = new GarminClient(makeConfig(), storeWithToken(USER));
+    await assert.rejects(
+      () => client.request(USER, "/x"),
+      (e: unknown) =>
+        e instanceof GarminApiError && e.status === 400 && /bad param/.test(e.message),
+    );
+  });
+});
+
+describe("GarminClient write validation", () => {
+  it("rejects an invalid workout before calling the API", async () => {
+    const f = stubFetch([makeResponse(200, {})]);
+    restore = f.restore;
+    const client = new GarminClient(makeConfig(), storeWithToken(USER));
+    await assert.rejects(
+      () =>
+        client.pushWorkout(USER, {
+          name: "x",
+          steps: [{ type: "interval", durationType: "time" }],
+        }),
+      GarminApiError,
+    );
+    assert.equal(f.calls.length, 0);
+  });
+});

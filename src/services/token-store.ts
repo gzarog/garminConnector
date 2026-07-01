@@ -7,6 +7,7 @@
  */
 
 import type { TokenSet, TokenStore } from "../types.js";
+import { logger } from "../utils/logger.js";
 
 /** Simple in-process token store. Not suitable for multi-instance hosting. */
 export class MemoryTokenStore implements TokenStore {
@@ -38,14 +39,13 @@ export function createTokenStore(
 ): TokenStore {
   if (backend === "redis") {
     if (!redisUrl) {
-      console.warn(
-        "[token-store] TOKEN_STORE=redis but REDIS_URL is unset; " +
-          "falling back to in-memory store.",
+      logger.warn(
+        "TOKEN_STORE=redis but REDIS_URL is unset; falling back to in-memory store.",
       );
     } else {
-      console.warn(
-        "[token-store] Redis backend not yet implemented; " +
-          "falling back to in-memory store. See services/token-store.ts.",
+      logger.warn(
+        "Redis backend not yet implemented; falling back to in-memory store. " +
+          "See services/token-store.ts.",
       );
     }
   }

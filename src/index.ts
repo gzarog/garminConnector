@@ -27,6 +27,7 @@ import {
 } from "./services/auth.js";
 import { createTokenStore } from "./services/token-store.js";
 import { createServer, LOCAL_USER_ID } from "./server.js";
+import { logger, setLogLevel, type LogLevel } from "./utils/logger.js";
 import type { ServerConfig } from "./types.js";
 
 /** Resolve runtime configuration from the environment. */
@@ -62,7 +63,7 @@ async function runStdio(config: ServerConfig): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Note: under stdio do not write to stdout; it is the protocol channel.
-  console.error(`[${SERVER_NAME}] v${SERVER_VERSION} ready (stdio).`);
+  logger.info(`${SERVER_NAME} v${SERVER_VERSION} ready (stdio).`);
 }
 
 async function runHttp(config: ServerConfig): Promise<void> {
@@ -128,7 +129,7 @@ async function runHttp(config: ServerConfig): Promise<void> {
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
-      console.error("[mcp] request error:", err);
+      logger.error("MCP request error:", err);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
@@ -152,8 +153,8 @@ async function runHttp(config: ServerConfig): Promise<void> {
   app.delete("/mcp", methodNotAllowed);
 
   app.listen(config.port, config.host, () => {
-    console.error(
-      `[${SERVER_NAME}] v${SERVER_VERSION} listening on ` +
+    logger.info(
+      `${SERVER_NAME} v${SERVER_VERSION} listening on ` +
         `http://${config.host}:${config.port} (MCP at /mcp).`,
     );
   });
@@ -161,6 +162,7 @@ async function runHttp(config: ServerConfig): Promise<void> {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  setLogLevel(config.logLevel as LogLevel);
   if (config.transport === "stdio") {
     await runStdio(config);
   } else {
@@ -169,6 +171,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("Fatal error starting server:", err);
+  logger.error("Fatal error starting server:", err);
   process.exit(1);
 });
