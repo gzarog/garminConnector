@@ -67,4 +67,9 @@ export interface ServerConfig {
   tokenStore: "memory" | "redis";
   redisUrl?: string;
   logLevel: string;
+  /**
+   * When true, skip real Garmin OAuth and serve sample data. Lets the connector
+   * be added to Claude and exercised end-to-end without a Garmin developer app.
+   */
+  demoMode: boolean;
 }

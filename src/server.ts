@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createHash } from "node:crypto";
 import { SERVER_NAME, SERVER_VERSION } from "./constants.js";
 import { GarminClient } from "./services/garmin-client.js";
+import { DemoGarminClient } from "./services/demo-client.js";
 import { registerActivityTools } from "./tools/activities.js";
 import { registerHealthTools } from "./tools/health.js";
 import { registerTrainingTools } from "./tools/training.js";
@@ -70,7 +71,9 @@ export function createServer(
     },
   );
 
-  const client = new GarminClient(config, store);
+  const client = config.demoMode
+    ? new DemoGarminClient(config, store)
+    : new GarminClient(config, store);
   const ctx: ToolContext = { client, resolveUserId };
 
   registerHealthTools(server, ctx);

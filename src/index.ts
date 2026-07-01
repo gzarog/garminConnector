@@ -54,6 +54,7 @@ function loadConfig(): ServerConfig {
     tokenStore: (process.env.TOKEN_STORE ?? "memory") as "memory" | "redis",
     redisUrl: process.env.REDIS_URL,
     logLevel: process.env.LOG_LEVEL ?? "info",
+    demoMode: (process.env.DEMO_MODE ?? "false").toLowerCase() === "true",
   };
 }
 
@@ -80,6 +81,11 @@ async function runHttp(config: ServerConfig): Promise<void> {
   // --- Health check --------------------------------------------------------
   app.get("/healthz", (_req, res) => {
     res.json({ name: SERVER_NAME, version: SERVER_VERSION, ok: true });
+  });
+
+  // --- Landing page --------------------------------------------------------
+  app.get("/", (_req, res) => {
+    res.type("html").send(landingPage(config));
   });
 
   // --- Branding assets (for the Connectors Directory listing) --------------
@@ -164,12 +170,57 @@ async function runHttp(config: ServerConfig): Promise<void> {
   app.get("/mcp", methodNotAllowed);
   app.delete("/mcp", methodNotAllowed);
 
+  if (config.demoMode) {
+    logger.warn(
+      "DEMO_MODE is ON — serving sample data and skipping real Garmin OAuth. " +
+        "Do not use in production.",
+    );
+  } else if (!config.garmin.clientId) {
+    logger.warn(
+      "GARMIN_CLIENT_ID is not set; real authorization will fail. " +
+        "Set Garmin credentials or run with DEMO_MODE=true.",
+    );
+  }
+
   app.listen(config.port, config.host, () => {
     logger.info(
       `${SERVER_NAME} v${SERVER_VERSION} listening on ` +
         `http://${config.host}:${config.port} (MCP at /mcp).`,
     );
   });
+}
+
+/** Minimal HTML landing page describing the connector and its status. */
+function landingPage(config: ServerConfig): string {
+  const mode = config.demoMode
+    ? '<p><strong>Demo mode is ON</strong> — sample data, no Garmin account needed.</p>'
+    : "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${SERVER_NAME}</title>
+  <link rel="icon" href="/favicon.svg" />
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto;
+           padding: 0 1rem; color: #1a2733; }
+    img { width: 72px; height: 72px; }
+    code { background: #eef2f7; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    a { color: #1e88e5; }
+  </style>
+</head>
+<body>
+  <img src="/logo.svg" alt="logo" />
+  <h1>${SERVER_NAME}</h1>
+  <p>MCP connector for Garmin Connect. Add this server as a connector in your MCP
+     client (e.g. Claude.ai) and click <strong>Connect</strong> to authorize.</p>
+  ${mode}
+  <p>MCP endpoint: <code>${config.publicBaseUrl}/mcp</code></p>
+  <p>Health: <a href="/healthz">/healthz</a> ·
+     Metadata: <a href="/.well-known/oauth-protected-resource">/.well-known/oauth-protected-resource</a></p>
+</body>
+</html>`;
 }
 
 async function main(): Promise<void> {
