@@ -15,6 +15,9 @@ import {
   type NormalizedRange,
 } from "../utils/dates.js";
 import { envelope, extractList, type Envelope } from "../utils/format.js";
+import { parseGarminError, parseRetryAfterMs } from "../utils/errors.js";
+import { logger } from "../utils/logger.js";
+import { validateCourse, validateWorkout } from "../utils/validate-training.js";
 import type {
   GarminRequestOptions,
   ServerConfig,
@@ -99,23 +102,23 @@ export class GarminClient {
           return (text ? JSON.parse(text) : undefined) as T;
         }
 
-        // Non-OK: decide whether to retry.
-        const details = await res.text().catch(() => undefined);
+        // Non-OK: normalize the error and decide whether to retry.
+        const bodyText = await res.text().catch(() => undefined);
+        const apiError = parseGarminError(res.status, bodyText);
         if (RETRYABLE_STATUS.has(res.status) && attempt < DEFAULTS.maxRetries) {
-          lastError = new GarminApiError(
-            `Garmin API ${res.status}`,
-            res.status,
-            details,
+          const retryAfter = parseRetryAfterMs(res.headers?.get?.("retry-after"));
+          const backoff = DEFAULTS.retryBaseDelayMs * 2 ** attempt;
+          const delay = retryAfter ?? backoff;
+          logger.warn(
+            `Garmin API ${res.status} on ${method} ${path}; ` +
+              `retrying in ${delay}ms (attempt ${attempt + 1}/${DEFAULTS.maxRetries}).`,
           );
-          await sleep(DEFAULTS.retryBaseDelayMs * 2 ** attempt);
+          lastError = apiError;
+          await sleep(delay);
           continue;
         }
 
-        throw new GarminApiError(
-          `Garmin API request failed (${res.status})`,
-          res.status,
-          details,
-        );
+        throw apiError;
       } catch (err) {
         // Network/abort errors are retryable.
         if (err instanceof GarminApiError && !RETRYABLE_STATUS.has(err.status)) {
@@ -123,7 +126,13 @@ export class GarminClient {
         }
         lastError = err;
         if (attempt < DEFAULTS.maxRetries) {
-          await sleep(DEFAULTS.retryBaseDelayMs * 2 ** attempt);
+          const delay = DEFAULTS.retryBaseDelayMs * 2 ** attempt;
+          logger.warn(
+            `Network error on ${method} ${path}: ` +
+              `${err instanceof Error ? err.message : String(err)}; ` +
+              `retrying in ${delay}ms (attempt ${attempt + 1}/${DEFAULTS.maxRetries}).`,
+          );
+          await sleep(delay);
           continue;
         }
       } finally {
@@ -387,21 +396,30 @@ export class GarminClient {
     return envelope(data, { startDate: params.startDate, endDate: params.endDate });
   }
 
-  pushWorkout(userId: string, workout: unknown) {
+  async pushWorkout(
+    userId: string,
+    workout: Parameters<typeof validateWorkout>[0],
+  ) {
+    validateWorkout(workout);
     return this.request(userId, GARMIN_ENDPOINTS.workouts, {
       method: "POST",
       body: workout,
     });
   }
 
-  pushTrainingPlan(userId: string, plan: unknown) {
+  async pushTrainingPlan(
+    userId: string,
+    plan: { workouts: { workout: Parameters<typeof validateWorkout>[0] }[] },
+  ) {
+    plan.workouts.forEach((entry) => validateWorkout(entry.workout));
     return this.request(userId, GARMIN_ENDPOINTS.trainingPlans, {
       method: "POST",
       body: plan,
     });
   }
 
-  pushCourse(userId: string, course: unknown) {
+  async pushCourse(userId: string, course: Parameters<typeof validateCourse>[0]) {
+    validateCourse(course);
     return this.request(userId, GARMIN_ENDPOINTS.courses, {
       method: "POST",
       body: course,

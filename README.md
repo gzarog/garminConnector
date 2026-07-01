@@ -85,13 +85,30 @@ more records remain.
 | `garmin_get_user_profile` | Read | User profile and preferences |
 | `garmin_get_devices` | Read | Connected Garmin devices |
 
-## Architecture
+## Documentation
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design document.
+- [Usage guide](./docs/USAGE.md) — connecting to Claude and example prompts
+- [Deployment guide](./docs/DEPLOYMENT.md) — Docker, Fly.io, Railway, env vars
+- [Architecture](./ARCHITECTURE.md) — full design document
+- [Privacy policy](./PRIVACY_POLICY.md)
 
-## Privacy Policy
+## Deployment
 
-See [PRIVACY_POLICY.md](./PRIVACY_POLICY.md).
+```bash
+# Build and run the container
+docker build -t garmin-mcp-server .
+docker run --rm -p 3000:3000 --env-file .env garmin-mcp-server
+```
+
+See the [deployment guide](./docs/DEPLOYMENT.md) for Fly.io, Railway, secrets,
+and the `/healthz` probe.
+
+## Error handling
+
+Failed Garmin calls return actionable messages (a 401 asks you to reconnect, a
+429 signals a rate limit). Transient failures (429/5xx/network) are retried with
+exponential backoff, honoring the `Retry-After` header. Write payloads are
+validated before they reach Garmin.
 
 ## License
 
