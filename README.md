@@ -105,6 +105,23 @@ docker run --rm -p 3000:3000 --env-file .env garmin-mcp-server
 See the [deployment guide](./docs/DEPLOYMENT.md) for Fly.io, Railway, secrets,
 and the `/healthz` probe.
 
+## Authentication (multi-user)
+
+The server is its own **OAuth 2.1 Authorization Server**. Each user connects
+their **own** Garmin account, and their MCP bearer token is mapped to their
+personal Garmin token set — so every user only ever sees their own data.
+
+- Metadata discovery: `/.well-known/oauth-authorization-server`,
+  `/.well-known/oauth-protected-resource`
+- Dynamic Client Registration: `/register`
+- Authorization / token: `/authorize`, `/token`; the `/mcp` endpoint requires a
+  valid bearer token (unauthenticated calls get `401` with a `WWW-Authenticate`
+  challenge pointing at the resource metadata).
+
+MCP clients (e.g. Claude.ai) discover and drive this automatically. See the
+[deployment guide](./docs/DEPLOYMENT.md#authentication) for the Garmin redirect
+URI to register.
+
 ## Error handling
 
 Failed Garmin calls return actionable messages (a 401 asks you to reconnect, a
