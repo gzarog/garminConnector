@@ -87,6 +87,7 @@ more records remain.
 
 ## Documentation
 
+- [Connect guide](./docs/CONNECT.md) — add to Claude & click **Connect** (incl. demo mode)
 - [Usage guide](./docs/USAGE.md) — connecting to Claude and example prompts
 - [Deployment guide](./docs/DEPLOYMENT.md) — Docker, Fly.io, Railway, env vars
 - [Submission guide](./docs/SUBMISSION.md) — Claude Connectors Directory checklist
@@ -119,8 +120,13 @@ personal Garmin token set — so every user only ever sees their own data.
   challenge pointing at the resource metadata).
 
 MCP clients (e.g. Claude.ai) discover and drive this automatically. See the
+[connect guide](./docs/CONNECT.md) for the step-by-step **Connect** flow, and the
 [deployment guide](./docs/DEPLOYMENT.md#authentication) for the Garmin redirect
 URI to register.
+
+**Try it instantly with demo mode** — set `DEMO_MODE=true` to skip real Garmin
+OAuth and serve sample data, so you can add the connector to Claude, click
+**Connect**, and exercise all tools without a Garmin developer app.
 
 ## Error handling
 

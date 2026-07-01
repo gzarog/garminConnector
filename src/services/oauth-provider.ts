@@ -107,11 +107,54 @@ export class GarminOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
+    // Demo mode: skip Garmin entirely and complete the authorization inline so
+    // the connector can be exercised without a Garmin developer app.
+    if (this.config.demoMode) {
+      const userId = randomUUID();
+      await this.garminTokens.set(userId, {
+        accessToken: `demo-${userId}`,
+        tokenType: "Bearer",
+        expiresAt: Date.now() + 100 * 365 * 24 * 60 * 60_000,
+      });
+      const code = this.mintAuthCode(client, params, userId);
+      logger.info(`[demo] auto-authorizing client ${client.client_id}`);
+      res.redirect(this.buildClientRedirect(params, code));
+      return;
+    }
+
     const garminState = randomBytes(16).toString("hex");
     this.pending.set(garminState, { client, params });
     const url = buildAuthorizeUrl(this.config, garminState, this.garminRedirectUri);
     logger.info(`Authorizing client ${client.client_id}; redirecting to Garmin.`);
     res.redirect(url);
+  }
+
+  /** Store an authorization code bound to a user + PKCE challenge. */
+  private mintAuthCode(
+    client: OAuthClientInformationFull,
+    params: AuthorizationParams,
+    userId: string,
+  ): string {
+    const code = randomBytes(24).toString("hex");
+    this.authCodes.set(code, {
+      clientId: client.client_id,
+      userId,
+      codeChallenge: params.codeChallenge,
+      redirectUri: params.redirectUri,
+      scopes: params.scopes ?? [],
+      expiresAt: Date.now() + AUTH_CODE_TTL_MS,
+    });
+    return code;
+  }
+
+  /** Build the MCP client's redirect URL carrying our code and their state. */
+  private buildClientRedirect(params: AuthorizationParams, code: string): string {
+    const redirect = new URL(params.redirectUri);
+    redirect.searchParams.set("code", code);
+    if (params.state !== undefined) {
+      redirect.searchParams.set("state", params.state);
+    }
+    return redirect.toString();
   }
 
   /**
@@ -139,22 +182,8 @@ export class GarminOAuthProvider implements OAuthServerProvider {
     const userId = randomUUID();
     await this.garminTokens.set(userId, tokens);
 
-    const code = randomBytes(24).toString("hex");
-    this.authCodes.set(code, {
-      clientId: pending.client.client_id,
-      userId,
-      codeChallenge: pending.params.codeChallenge,
-      redirectUri: pending.params.redirectUri,
-      scopes: pending.params.scopes ?? [],
-      expiresAt: Date.now() + AUTH_CODE_TTL_MS,
-    });
-
-    const redirect = new URL(pending.params.redirectUri);
-    redirect.searchParams.set("code", code);
-    if (pending.params.state !== undefined) {
-      redirect.searchParams.set("state", pending.params.state);
-    }
-    return { redirectTo: redirect.toString() };
+    const code = this.mintAuthCode(pending.client, pending.params, userId);
+    return { redirectTo: this.buildClientRedirect(pending.params, code) };
   }
 
   async challengeForAuthorizationCode(

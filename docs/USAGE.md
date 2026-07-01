@@ -9,8 +9,12 @@ prompts for each tool group.
 
 1. Deploy the server with `TRANSPORT=http` (see [DEPLOYMENT.md](./DEPLOYMENT.md)).
 2. In Claude.ai, add a custom connector pointing at `https://your-domain/mcp`.
-3. Complete the Garmin OAuth flow when prompted — you'll be redirected to
-   Garmin Connect to grant access, then back to Claude.
+3. Click **Connect** and complete the Garmin OAuth flow — you'll be redirected
+   to Garmin Connect to grant access, then back to Claude.
+
+See the [connect guide](./CONNECT.md) for a step-by-step walkthrough, including
+a **demo mode** that lets you test the full Connect flow with sample data and no
+Garmin developer account.
 
 ### MCP Inspector / Claude Desktop (local)
 
