@@ -1,13 +1,15 @@
 /**
  * Token persistence.
  *
- * Provides an in-memory implementation suitable for local development and a
- * factory that can be extended to Redis/KV for production multi-instance
- * deployments. The interface is intentionally small so backends are swappable.
+ * The per-user Garmin token sets are stored via a {@link KeyValueStore}, so the
+ * same code works in-memory (single instance) or on Redis (multi-instance). A
+ * standalone {@link MemoryTokenStore} is retained for stdio and tests.
  */
 
 import type { TokenSet, TokenStore } from "../types.js";
-import { logger } from "../utils/logger.js";
+import { getJson, setJson, type KeyValueStore } from "./kv.js";
+
+const KEY_PREFIX = "garmin:token:";
 
 /** Simple in-process token store. Not suitable for multi-instance hosting. */
 export class MemoryTokenStore implements TokenStore {
@@ -26,28 +28,23 @@ export class MemoryTokenStore implements TokenStore {
   }
 }
 
-/**
- * Create a token store from configuration.
- *
- * The Redis backend is a placeholder: wiring a real client (e.g. `ioredis`)
- * is left as a deployment-time concern so the core package stays dependency
- * light. Until then we fall back to in-memory with a warning.
- */
-export function createTokenStore(
-  backend: "memory" | "redis",
-  redisUrl?: string,
-): TokenStore {
-  if (backend === "redis") {
-    if (!redisUrl) {
-      logger.warn(
-        "TOKEN_STORE=redis but REDIS_URL is unset; falling back to in-memory store.",
-      );
-    } else {
-      logger.warn(
-        "Redis backend not yet implemented; falling back to in-memory store. " +
-          "See services/token-store.ts.",
-      );
-    }
+/** Token store backed by a {@link KeyValueStore} (memory or Redis). */
+export class KvTokenStore implements TokenStore {
+  constructor(private readonly kv: KeyValueStore) {}
+
+  private key(userId: string): string {
+    return `${KEY_PREFIX}${userId}`;
   }
-  return new MemoryTokenStore();
+
+  get(userId: string): Promise<TokenSet | undefined> {
+    return getJson<TokenSet>(this.kv, this.key(userId));
+  }
+
+  set(userId: string, tokens: TokenSet): Promise<void> {
+    return setJson(this.kv, this.key(userId), tokens);
+  }
+
+  delete(userId: string): Promise<void> {
+    return this.kv.delete(this.key(userId));
+  }
 }

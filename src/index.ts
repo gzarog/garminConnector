@@ -24,7 +24,8 @@ import {
   SERVER_NAME,
   SERVER_VERSION,
 } from "./constants.js";
-import { createTokenStore } from "./services/token-store.js";
+import { createKeyValueStore } from "./services/kv.js";
+import { KvTokenStore } from "./services/token-store.js";
 import { GarminOAuthProvider } from "./services/oauth-provider.js";
 import { createServer } from "./server.js";
 import { logger, setLogLevel, type LogLevel } from "./utils/logger.js";
@@ -59,7 +60,8 @@ function loadConfig(): ServerConfig {
 }
 
 async function runStdio(config: ServerConfig): Promise<void> {
-  const store = createTokenStore(config.tokenStore, config.redisUrl);
+  const kv = await createKeyValueStore(config);
+  const store = new KvTokenStore(kv);
   const server = createServer(config, store);
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -68,11 +70,12 @@ async function runStdio(config: ServerConfig): Promise<void> {
 }
 
 async function runHttp(config: ServerConfig): Promise<void> {
-  const store = createTokenStore(config.tokenStore, config.redisUrl);
+  const kv = await createKeyValueStore(config);
+  const store = new KvTokenStore(kv);
 
   const issuerUrl = new URL(config.publicBaseUrl);
   const garminRedirectUri = `${config.publicBaseUrl}/oauth/callback`;
-  const provider = new GarminOAuthProvider(config, store, garminRedirectUri);
+  const provider = new GarminOAuthProvider(config, store, garminRedirectUri, kv);
   const resourceMetadataUrl = `${config.publicBaseUrl}/.well-known/oauth-protected-resource`;
 
   const app = express();

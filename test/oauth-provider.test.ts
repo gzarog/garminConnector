@@ -3,10 +3,15 @@ import assert from "node:assert/strict";
 import type { Response } from "express";
 import { GarminOAuthProvider } from "../src/services/oauth-provider.js";
 import { MemoryTokenStore } from "../src/services/token-store.js";
+import { MemoryKeyValueStore } from "../src/services/kv.js";
 import { makeConfig, makeResponse, stubFetch } from "./helpers.js";
 
 const REDIRECT = "http://localhost:3999/oauth/callback";
 const CLIENT_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
+
+function newProvider(store = new MemoryTokenStore()) {
+  return new GarminOAuthProvider(makeConfig(), store, REDIRECT, new MemoryKeyValueStore());
+}
 
 let restore: (() => void) | undefined;
 afterEach(() => {
@@ -19,8 +24,7 @@ async function beginAuthorize(
   provider: GarminOAuthProvider,
   clientState: string,
 ) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const client = provider.clientsStore.registerClient({
+  const client = await provider.clientsStore.registerClient({
     redirect_uris: [CLIENT_REDIRECT],
   } as never);
 
@@ -79,7 +83,7 @@ async function connectUser(
 describe("GarminOAuthProvider", () => {
   it("isolates two users' Garmin tokens", async () => {
     const store = new MemoryTokenStore();
-    const provider = new GarminOAuthProvider(makeConfig(), store, REDIRECT);
+    const provider = newProvider(store);
 
     const a = await connectUser(provider, "state-A", "garmin-access-A");
     const b = await connectUser(provider, "state-B", "garmin-access-B");
@@ -93,9 +97,32 @@ describe("GarminOAuthProvider", () => {
     assert.equal((await store.get(b.userId))?.accessToken, "garmin-access-B");
   });
 
+  it("shares state across instances via a common key/value store", async () => {
+    // Two server instances (e.g. two replicas) backed by the same Redis-like KV.
+    const kv = new MemoryKeyValueStore();
+    const store = new MemoryTokenStore();
+    const cfg = makeConfig();
+    const instanceA = new GarminOAuthProvider(cfg, store, REDIRECT, kv);
+    const instanceB = new GarminOAuthProvider(cfg, store, REDIRECT, kv);
+
+    // Connect on instance A.
+    const { tokens } = await connectUser(instanceA, "s", "garmin-access");
+
+    // Instance B can verify the token A issued, and resolve the same user.
+    const authInfo = await instanceB.verifyAccessToken(tokens.access_token);
+    assert.ok(authInfo.extra?.userId);
+
+    // A client registered on A is visible on B.
+    const registered = await instanceA.clientsStore.registerClient({
+      redirect_uris: [CLIENT_REDIRECT],
+    } as never);
+    const seenByB = await instanceB.clientsStore.getClient(registered.client_id);
+    assert.equal(seenByB?.client_id, registered.client_id);
+  });
+
   it("issues a bearer access token with the user id in authInfo.extra", async () => {
     const store = new MemoryTokenStore();
-    const provider = new GarminOAuthProvider(makeConfig(), store, REDIRECT);
+    const provider = newProvider(store);
     const { tokens, authInfo } = await connectUser(provider, "s", "garmin-access");
     assert.equal(tokens.token_type, "Bearer");
     assert.ok(tokens.refresh_token);
@@ -103,11 +130,7 @@ describe("GarminOAuthProvider", () => {
   });
 
   it("rejects an unknown callback state", async () => {
-    const provider = new GarminOAuthProvider(
-      makeConfig(),
-      new MemoryTokenStore(),
-      REDIRECT,
-    );
+    const provider = newProvider();
     await assert.rejects(
       () => provider.handleGarminCallback("nope", "code"),
       /Unknown or expired authorization state/,
@@ -115,17 +138,13 @@ describe("GarminOAuthProvider", () => {
   });
 
   it("rejects an unknown access token", async () => {
-    const provider = new GarminOAuthProvider(
-      makeConfig(),
-      new MemoryTokenStore(),
-      REDIRECT,
-    );
+    const provider = newProvider();
     await assert.rejects(() => provider.verifyAccessToken("bogus"), /Invalid access token/);
   });
 
   it("does not reuse an authorization code", async () => {
     const store = new MemoryTokenStore();
-    const provider = new GarminOAuthProvider(makeConfig(), store, REDIRECT);
+    const provider = newProvider(store);
 
     const f = stubFetch([
       makeResponse(200, { access_token: "g", expires_in: 3600, token_type: "Bearer" }),
@@ -144,16 +163,13 @@ describe("GarminOAuthProvider", () => {
 
   it("rotates refresh tokens", async () => {
     const store = new MemoryTokenStore();
-    const provider = new GarminOAuthProvider(makeConfig(), store, REDIRECT);
+    const provider = newProvider(store);
     const { tokens } = await connectUser(provider, "s", "garmin-access");
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = provider.clientsStore.registerClient({
-      redirect_uris: [CLIENT_REDIRECT],
-    } as never);
-    // The refresh token was issued to the original client; use the stored one.
+    // The refresh token was issued to the original client; reuse its id.
+    const clientId = (await provider.verifyAccessToken(tokens.access_token)).clientId;
     const refreshed = await provider.exchangeRefreshToken(
-      { client_id: (await provider.verifyAccessToken(tokens.access_token)).clientId } as never,
+      { client_id: clientId } as never,
       tokens.refresh_token!,
     );
     assert.ok(refreshed.access_token);
@@ -163,6 +179,5 @@ describe("GarminOAuthProvider", () => {
       () => provider.exchangeRefreshToken({ client_id: "x" } as never, tokens.refresh_token!),
       /Invalid refresh token/,
     );
-    void client;
   });
 });

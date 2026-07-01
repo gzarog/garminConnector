@@ -7,8 +7,10 @@
  * set. Every `/mcp` request then carries our bearer token, from which we derive
  * a stable per-user identity — so each user only ever sees their own data.
  *
- * State is held in memory: correct for a single instance. For multi-instance
- * hosting, back these maps with the same store used for Garmin tokens (Redis).
+ * All server state (registered clients, pending authorizations, authorization
+ * codes, and issued tokens) lives in a {@link KeyValueStore}. With the in-memory
+ * backend this is single-instance; with Redis it is shared across replicas, so
+ * a token issued by one instance is verifiable by any other.
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
@@ -25,11 +27,22 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { buildAuthorizeUrl, exchangeCodeForTokens } from "./auth.js";
+import { getJson, setJson, type KeyValueStore } from "./kv.js";
 import { logger } from "../utils/logger.js";
 import type { ServerConfig, TokenStore } from "../types.js";
 
-const AUTH_CODE_TTL_MS = 5 * 60_000;
-const ACCESS_TOKEN_TTL_MS = 60 * 60_000;
+const AUTH_CODE_TTL_SEC = 5 * 60;
+const ACCESS_TOKEN_TTL_SEC = 60 * 60;
+const REFRESH_TOKEN_TTL_SEC = 30 * 24 * 60 * 60;
+const PENDING_TTL_SEC = 10 * 60;
+
+const KEYS = {
+  client: (id: string) => `oauth:client:${id}`,
+  pending: (state: string) => `oauth:pending:${state}`,
+  code: (code: string) => `oauth:code:${code}`,
+  access: (token: string) => `oauth:access:${token}`,
+  refresh: (token: string) => `oauth:refresh:${token}`,
+};
 
 /** A pending authorization: the MCP client's request awaiting Garmin login. */
 interface PendingAuth {
@@ -44,7 +57,6 @@ interface StoredAuthCode {
   codeChallenge: string;
   redirectUri: string;
   scopes: string[];
-  expiresAt: number;
 }
 
 interface StoredAccessToken {
@@ -60,35 +72,30 @@ interface StoredRefreshToken {
   scopes: string[];
 }
 
-/** In-memory dynamic client registry. */
-class MemoryClientsStore implements OAuthRegisteredClientsStore {
-  private readonly clients = new Map<string, OAuthClientInformationFull>();
+/** Dynamic client registry backed by the shared key/value store. */
+class KvClientsStore implements OAuthRegisteredClientsStore {
+  constructor(private readonly kv: KeyValueStore) {}
 
-  getClient(clientId: string): OAuthClientInformationFull | undefined {
-    return this.clients.get(clientId);
+  getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
+    return getJson<OAuthClientInformationFull>(this.kv, KEYS.client(clientId));
   }
 
-  registerClient(
+  async registerClient(
     client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
-  ): OAuthClientInformationFull {
+  ): Promise<OAuthClientInformationFull> {
     const registered: OAuthClientInformationFull = {
       ...client,
       client_id: randomUUID(),
       client_id_issued_at: Math.floor(Date.now() / 1000),
     };
-    this.clients.set(registered.client_id, registered);
+    await setJson(this.kv, KEYS.client(registered.client_id), registered);
     logger.info(`Registered OAuth client ${registered.client_id}`);
     return registered;
   }
 }
 
 export class GarminOAuthProvider implements OAuthServerProvider {
-  readonly clientsStore = new MemoryClientsStore();
-
-  private readonly pending = new Map<string, PendingAuth>();
-  private readonly authCodes = new Map<string, StoredAuthCode>();
-  private readonly accessTokens = new Map<string, StoredAccessToken>();
-  private readonly refreshTokens = new Map<string, StoredRefreshToken>();
+  readonly clientsStore: OAuthRegisteredClientsStore;
 
   constructor(
     private readonly config: ServerConfig,
@@ -96,19 +103,22 @@ export class GarminOAuthProvider implements OAuthServerProvider {
     private readonly garminTokens: TokenStore,
     /** Absolute URI Garmin redirects back to (our callback route). */
     private readonly garminRedirectUri: string,
-  ) {}
+    /** Shared store for all OAuth server state. */
+    private readonly kv: KeyValueStore,
+  ) {
+    this.clientsStore = new KvClientsStore(kv);
+  }
 
   /**
-   * Step 1: the MCP client wants to authorize. Stash the request and redirect
-   * the user to Garmin's consent screen.
+   * Step 1: the MCP client wants to authorize. In demo mode we complete inline;
+   * otherwise we stash the request and redirect the user to Garmin's consent
+   * screen.
    */
   async authorize(
     client: OAuthClientInformationFull,
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
-    // Demo mode: skip Garmin entirely and complete the authorization inline so
-    // the connector can be exercised without a Garmin developer app.
     if (this.config.demoMode) {
       const userId = randomUUID();
       await this.garminTokens.set(userId, {
@@ -116,34 +126,75 @@ export class GarminOAuthProvider implements OAuthServerProvider {
         tokenType: "Bearer",
         expiresAt: Date.now() + 100 * 365 * 24 * 60 * 60_000,
       });
-      const code = this.mintAuthCode(client, params, userId);
+      const code = await this.mintAuthCode(client, params, userId);
       logger.info(`[demo] auto-authorizing client ${client.client_id}`);
       res.redirect(this.buildClientRedirect(params, code));
       return;
     }
 
     const garminState = randomBytes(16).toString("hex");
-    this.pending.set(garminState, { client, params });
+    await setJson(
+      this.kv,
+      KEYS.pending(garminState),
+      { client, params } satisfies PendingAuth,
+      PENDING_TTL_SEC,
+    );
     const url = buildAuthorizeUrl(this.config, garminState, this.garminRedirectUri);
     logger.info(`Authorizing client ${client.client_id}; redirecting to Garmin.`);
     res.redirect(url);
   }
 
+  /**
+   * Step 2 (called by the Garmin callback route): exchange Garmin's code, bind
+   * a fresh user identity to the returned Garmin tokens, mint our own
+   * authorization code, and return where to send the MCP client next.
+   */
+  async handleGarminCallback(
+    garminState: string,
+    garminCode: string,
+  ): Promise<{ redirectTo: string }> {
+    const pending = await getJson<PendingAuth>(
+      this.kv,
+      KEYS.pending(garminState),
+    );
+    if (!pending) {
+      throw new Error("Unknown or expired authorization state.");
+    }
+    await this.kv.delete(KEYS.pending(garminState));
+
+    const tokens = await exchangeCodeForTokens(
+      this.config,
+      garminCode,
+      this.garminRedirectUri,
+    );
+
+    // Each successful connect gets its own user identity + Garmin token set.
+    const userId = randomUUID();
+    await this.garminTokens.set(userId, tokens);
+
+    const code = await this.mintAuthCode(pending.client, pending.params, userId);
+    return { redirectTo: this.buildClientRedirect(pending.params, code) };
+  }
+
   /** Store an authorization code bound to a user + PKCE challenge. */
-  private mintAuthCode(
+  private async mintAuthCode(
     client: OAuthClientInformationFull,
     params: AuthorizationParams,
     userId: string,
-  ): string {
+  ): Promise<string> {
     const code = randomBytes(24).toString("hex");
-    this.authCodes.set(code, {
-      clientId: client.client_id,
-      userId,
-      codeChallenge: params.codeChallenge,
-      redirectUri: params.redirectUri,
-      scopes: params.scopes ?? [],
-      expiresAt: Date.now() + AUTH_CODE_TTL_MS,
-    });
+    await setJson(
+      this.kv,
+      KEYS.code(code),
+      {
+        clientId: client.client_id,
+        userId,
+        codeChallenge: params.codeChallenge,
+        redirectUri: params.redirectUri,
+        scopes: params.scopes ?? [],
+      } satisfies StoredAuthCode,
+      AUTH_CODE_TTL_SEC,
+    );
     return code;
   }
 
@@ -157,40 +208,14 @@ export class GarminOAuthProvider implements OAuthServerProvider {
     return redirect.toString();
   }
 
-  /**
-   * Step 2 (called by the Garmin callback route): exchange Garmin's code, bind
-   * a fresh user identity to the returned Garmin tokens, mint our own
-   * authorization code, and return where to send the MCP client next.
-   */
-  async handleGarminCallback(
-    garminState: string,
-    garminCode: string,
-  ): Promise<{ redirectTo: string }> {
-    const pending = this.pending.get(garminState);
-    if (!pending) {
-      throw new Error("Unknown or expired authorization state.");
-    }
-    this.pending.delete(garminState);
-
-    const tokens = await exchangeCodeForTokens(
-      this.config,
-      garminCode,
-      this.garminRedirectUri,
-    );
-
-    // Each successful connect gets its own user identity + Garmin token set.
-    const userId = randomUUID();
-    await this.garminTokens.set(userId, tokens);
-
-    const code = this.mintAuthCode(pending.client, pending.params, userId);
-    return { redirectTo: this.buildClientRedirect(pending.params, code) };
-  }
-
   async challengeForAuthorizationCode(
     _client: OAuthClientInformationFull,
     authorizationCode: string,
   ): Promise<string> {
-    const stored = this.authCodes.get(authorizationCode);
+    const stored = await getJson<StoredAuthCode>(
+      this.kv,
+      KEYS.code(authorizationCode),
+    );
     if (!stored) {
       throw new Error("Invalid authorization code.");
     }
@@ -201,16 +226,16 @@ export class GarminOAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     authorizationCode: string,
   ): Promise<OAuthTokens> {
-    const stored = this.authCodes.get(authorizationCode);
+    const stored = await getJson<StoredAuthCode>(
+      this.kv,
+      KEYS.code(authorizationCode),
+    );
     if (!stored) {
       throw new Error("Invalid authorization code.");
     }
-    this.authCodes.delete(authorizationCode); // one-time use
+    await this.kv.delete(KEYS.code(authorizationCode)); // one-time use
     if (stored.clientId !== client.client_id) {
       throw new Error("Authorization code was issued to a different client.");
-    }
-    if (Date.now() > stored.expiresAt) {
-      throw new Error("Authorization code has expired.");
     }
     return this.issueTokens(stored.clientId, stored.userId, stored.scopes);
   }
@@ -220,11 +245,14 @@ export class GarminOAuthProvider implements OAuthServerProvider {
     refreshToken: string,
     scopes?: string[],
   ): Promise<OAuthTokens> {
-    const stored = this.refreshTokens.get(refreshToken);
+    const stored = await getJson<StoredRefreshToken>(
+      this.kv,
+      KEYS.refresh(refreshToken),
+    );
     if (!stored || stored.clientId !== client.client_id) {
       throw new Error("Invalid refresh token.");
     }
-    this.refreshTokens.delete(refreshToken); // rotate
+    await this.kv.delete(KEYS.refresh(refreshToken)); // rotate
     return this.issueTokens(
       stored.clientId,
       stored.userId,
@@ -233,12 +261,12 @@ export class GarminOAuthProvider implements OAuthServerProvider {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
-    const stored = this.accessTokens.get(token);
+    const stored = await getJson<StoredAccessToken>(this.kv, KEYS.access(token));
     if (!stored) {
       throw new Error("Invalid access token.");
     }
     if (Date.now() > stored.expiresAt) {
-      this.accessTokens.delete(token);
+      await this.kv.delete(KEYS.access(token));
       throw new Error("Access token has expired.");
     }
     return {
@@ -254,28 +282,38 @@ export class GarminOAuthProvider implements OAuthServerProvider {
     _client: OAuthClientInformationFull,
     request: OAuthTokenRevocationRequest,
   ): Promise<void> {
-    this.accessTokens.delete(request.token);
-    this.refreshTokens.delete(request.token);
+    await this.kv.delete(KEYS.access(request.token));
+    await this.kv.delete(KEYS.refresh(request.token));
   }
 
-  private issueTokens(
+  private async issueTokens(
     clientId: string,
     userId: string,
     scopes: string[],
-  ): OAuthTokens {
+  ): Promise<OAuthTokens> {
     const accessToken = randomBytes(32).toString("hex");
     const refreshToken = randomBytes(32).toString("hex");
-    this.accessTokens.set(accessToken, {
-      userId,
-      clientId,
-      scopes,
-      expiresAt: Date.now() + ACCESS_TOKEN_TTL_MS,
-    });
-    this.refreshTokens.set(refreshToken, { userId, clientId, scopes });
+    await setJson(
+      this.kv,
+      KEYS.access(accessToken),
+      {
+        userId,
+        clientId,
+        scopes,
+        expiresAt: Date.now() + ACCESS_TOKEN_TTL_SEC * 1000,
+      } satisfies StoredAccessToken,
+      ACCESS_TOKEN_TTL_SEC,
+    );
+    await setJson(
+      this.kv,
+      KEYS.refresh(refreshToken),
+      { userId, clientId, scopes } satisfies StoredRefreshToken,
+      REFRESH_TOKEN_TTL_SEC,
+    );
     return {
       access_token: accessToken,
       token_type: "Bearer",
-      expires_in: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
+      expires_in: ACCESS_TOKEN_TTL_SEC,
       refresh_token: refreshToken,
       scope: scopes.join(" ") || undefined,
     };

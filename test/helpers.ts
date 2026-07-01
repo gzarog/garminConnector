@@ -18,6 +18,7 @@ export function makeConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     },
     tokenStore: "memory",
     logLevel: "error",
+    demoMode: false,
     ...overrides,
   };
 }
