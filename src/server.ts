@@ -40,10 +40,23 @@ export function createServer(
   config: ServerConfig,
   store: TokenStore,
 ): McpServer {
-  const server = new McpServer({
-    name: SERVER_NAME,
-    version: SERVER_VERSION,
-  });
+  const server = new McpServer(
+    {
+      name: SERVER_NAME,
+      version: SERVER_VERSION,
+    },
+    {
+      instructions:
+        "Access Garmin Connect health, fitness, and activity data. Read tools " +
+        "(garmin_get_*, garmin_list_activities, garmin_search_activities) accept " +
+        "a date or YYYY-MM-DD date range; wellness ranges are capped at 31 days " +
+        "and responses include a `meta` envelope with the resolved range and " +
+        "record count. Write tools (garmin_push_workout, garmin_push_training_plan, " +
+        "garmin_push_course) send content to the user's device and should be " +
+        "confirmed with the user first. If a call returns a 401, the user needs to " +
+        "reconnect their Garmin account.",
+    },
+  );
 
   const client = new GarminClient(config, store);
   const ctx: ToolContext = { client, resolveUserId };

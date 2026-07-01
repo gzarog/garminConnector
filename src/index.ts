@@ -10,6 +10,8 @@
 
 import express, { type Request, type Response } from "express";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -79,6 +81,15 @@ async function runHttp(config: ServerConfig): Promise<void> {
   app.get("/healthz", (_req, res) => {
     res.json({ name: SERVER_NAME, version: SERVER_VERSION, ok: true });
   });
+
+  // --- Branding assets (for the Connectors Directory listing) --------------
+  const assetsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "assets");
+  app.use("/assets", express.static(assetsDir, { maxAge: "1h" }));
+  app.get("/logo.svg", (_req, res) => res.sendFile(join(assetsDir, "logo.svg")));
+  app.get("/favicon.svg", (_req, res) =>
+    res.sendFile(join(assetsDir, "favicon.svg")),
+  );
+  app.get("/favicon.ico", (_req, res) => res.redirect(302, "/favicon.svg"));
 
   // --- OAuth: begin authorization -----------------------------------------
   app.get("/authorize", (_req: Request, res: Response) => {

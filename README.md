@@ -89,6 +89,8 @@ more records remain.
 
 - [Usage guide](./docs/USAGE.md) — connecting to Claude and example prompts
 - [Deployment guide](./docs/DEPLOYMENT.md) — Docker, Fly.io, Railway, env vars
+- [Submission guide](./docs/SUBMISSION.md) — Claude Connectors Directory checklist
+- [Branding assets](./assets/README.md) — logo, favicon, screenshots
 - [Architecture](./ARCHITECTURE.md) — full design document
 - [Privacy policy](./PRIVACY_POLICY.md)
 
